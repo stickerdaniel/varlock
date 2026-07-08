@@ -8,6 +8,7 @@ import { redactString } from '../../runtime/lib/redaction';
 import {
   checkForConfigErrors, checkForNoEnvFiles, checkForSchemaErrors, showPluginWarnings,
 } from '../helpers/error-checks';
+import { resolveItemFilterKeys } from '../helpers/item-filter';
 import { type TypedGunshiCommandFn } from '../helpers/gunshi-type-utils';
 import ansis from 'ansis';
 
@@ -33,6 +34,10 @@ export const commandSpec = define({
     'show-all': {
       type: 'boolean',
       description: 'When load is failing, show all items rather than only failing items',
+    },
+    filter: {
+      type: 'string',
+      description: 'Filter which items are shown: comma-separated key names/globs (e.g. STRIPE_*), negations (!KEY), decorator selectors (@sensitive, @required), and tag selectors (#tagname, set via @tag(tagname))',
     },
     env: {
       type: 'string',
@@ -77,6 +82,9 @@ Examples:
   varlock load --format json-full --summary-stderr   # JSON on stdout + redacted human summary on stderr
   varlock load --format json-full --summary-file /tmp/summary.txt   # JSON on stdout + redacted human summary written to file
   varlock load --agent            # Agent-safe JSON output with sensitive values redacted
+  varlock load --filter="STRIPE_*,!STRIPE_DEBUG_KEY"  # Only STRIPE_* keys, excluding one
+  varlock load --filter="@sensitive"  # Only items marked @sensitive
+  varlock load --filter="#billing"    # Only items tagged @tag(billing)
 `.trim(),
 });
 
@@ -141,8 +149,13 @@ export const commandFn: TypedGunshiCommandFn<typeof commandSpec> = async (ctx) =
     }
   }
 
+  const filterKeys = resolveItemFilterKeys(Object.values(envGraph.configSchema), ctx.values.filter);
+  const sortedConfigKeys = filterKeys
+    ? envGraph.sortedConfigKeys.filter((key) => filterKeys.has(key))
+    : envGraph.sortedConfigKeys;
+
   if ((summaryStderr || summaryFile) && outputFormat !== 'pretty') {
-    const summaryLines = envGraph.sortedConfigKeys.map(
+    const summaryLines = sortedConfigKeys.map(
       (key) => getItemSummary(envGraph.configSchema[key]),
     );
     const summaryStr = `${summaryLines.join('\n')}\n`;
@@ -160,7 +173,7 @@ export const commandFn: TypedGunshiCommandFn<typeof commandSpec> = async (ctx) =
     // include @internal items here: they aren't injected, but an agent inspecting the env
     // still needs to see they exist (redacted) to help set/debug them
     const resolvedEnv = envGraph.getResolvedEnvObject({ includeInternal: true });
-    for (const itemKey of envGraph.sortedConfigKeys) {
+    for (const itemKey of sortedConfigKeys) {
       const item = envGraph.configSchema[itemKey];
       const value = resolvedEnv[itemKey];
       if (item.isSensitive && typeof value === 'string') {
@@ -180,18 +193,18 @@ export const commandFn: TypedGunshiCommandFn<typeof commandSpec> = async (ctx) =
       console.error();
     }
     console.error(ansis.bold.green('-- Resolved config --'));
-    for (const itemKey of envGraph.sortedConfigKeys) {
+    for (const itemKey of sortedConfigKeys) {
       const item = envGraph.configSchema[itemKey];
       console.log(getItemSummary(item));
     }
   } else if (outputFormat === 'json') {
-    const env = agent ? getRedactedEnvObject() : envGraph.getResolvedEnvObject();
+    const env = agent ? getRedactedEnvObject() : envGraph.getResolvedEnvObject({ filterKeys });
     console.log(JSON.stringify(env, null, 2));
   } else if (outputFormat === 'json-full') {
     const indent = compact ? 0 : 2;
     // this is an inspection dump (not the injected blob), so include @internal items —
     // they're flagged with isInternal and redacted below like any other sensitive value
-    const serialized = envGraph.getSerializedGraph({ includeInternal: true });
+    const serialized = envGraph.getSerializedGraph({ includeInternal: true, filterKeys });
     if (agent) {
       for (const key in serialized.config) {
         const item = serialized.config[key];
@@ -209,7 +222,7 @@ export const commandFn: TypedGunshiCommandFn<typeof commandSpec> = async (ctx) =
       gracefulExit(1);
     }
   } else if (outputFormat === 'env' || outputFormat === 'shell') {
-    const resolvedEnv = envGraph.getResolvedEnvObject();
+    const resolvedEnv = envGraph.getResolvedEnvObject({ filterKeys });
     const skipUndefined = compact === true;
     const prefix = outputFormat === 'shell' ? 'export ' : '';
 
