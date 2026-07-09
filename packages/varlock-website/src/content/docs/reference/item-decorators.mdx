@@ -116,7 +116,7 @@ PUBLIC_API_URL=https://api.example.com
 ### `@internal`
 **Value type:** `boolean`
 
-Marks an item as used **only internally by varlock**, not by your application. Internal items are still resolved and can be referenced by other items (e.g. via [`ref()`](/reference/functions/#ref) or string expansion), but they are **excluded** from everything that reaches your app: the injected env vars, the [serialized graph](/reference/reserved-variables/#__varlock_env) blob, and generated types.
+Marks an item as used **only internally by varlock**, not by your application. Internal items are still resolved and can be referenced by other items (e.g. via [`ref()`](/reference/functions/#ref) or string expansion), but they are **excluded** from generated types and from everything `varlock run` and the CLI's `load`/`run` output formats hand to your app: the injected env vars and the [serialized graph](/reference/reserved-variables/#__varlock_env) blob. (See the caution below on framework integrations, which don't enforce this yet.)
 
 The most common use is a "secret zero": a credential used only to fetch _other_ secrets (for example a vault/secrets-manager token). Your application never needs it, and keeping it out of the process environment reduces your attack surface.
 
@@ -146,6 +146,10 @@ Because internal items still resolve and validate, marking a variable internal d
 :::
 
 `varlock run` strips internal items from the child process environment **even if they were set in the ambient environment** (e.g. `OP_TOKEN=xxx varlock run ...`), so a secret-zero token never leaks into your app. If a _nested_ `varlock run` needs the internal value for its own resolution, pass [`--include-internal`](/reference/cli-commands/#run) to keep it in the child env.
+
+:::caution[Known gap: framework integrations don't enforce this yet]
+This exclusion guarantee currently applies to `varlock run` and the `varlock load`/`varlock run` output formats, not to build-time framework integrations (Vite, and similarly Next.js/Astro/Cloudflare). Those integrations currently source their injected env from `varlock load --format json-full`, which always retains internal items (with real values) for local inspection, and don't yet re-apply the internal exclusion before embedding that data into client/SSR code. Until this is fixed, don't rely on `@internal` to keep a credential out of app code reachable via one of these integrations - the fix is tracked as a follow-up.
+:::
 </div>
 
 <div>
